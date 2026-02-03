@@ -3,7 +3,12 @@ stages:
   - sca
   - sast
   - dast
-  - build-notify
+  - build
+  - notify
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERDIR: ""
 
 secrets-linting:
   stage: secrets
@@ -13,21 +18,24 @@ secrets-linting:
   script:
     - gitleaks detect --exit-code=1 --report-format json --report-path=secrets.json
   artifacts:
+    when: always
     paths:
       - secrets.json
   allow_failure: false
 
 sca-snyk:
   stage: sca
-  image: node:20
+  image: python:3.9
+  before_script:
+    - pip install --no-cache-dir snyk
   script:
-    - npm ci -g snyk
     - snyk auth $SNYK_TOKEN
     - snyk test --file=requirements.txt --severity-threshold=high --fail-on=upgradable
-    - snyk monitor --file=requirements.txt
+    - snyk monitor --file=requirements.txt --package-manager=pip || true
   artifacts:
+    when: always
     paths:
-      - snyk-lc-report.html
+      - .snyk
   allow_failure: false
 
 sast-sonarqube:
@@ -45,21 +53,26 @@ sast-sonarqube:
       -Dsonar.qualitygate.wait=true
   allow_failure: false
 
+
 dast-zap:
   stage: dast
   image: python:3.9-slim
   services:
     - name: pygoat/pygoat:latest
       alias: app-target
+  variables:
+    TARGET: "http://app-target:8000"
+    ZAP_APIKEY: "${ZAP_APIKEY}"
+    ZAP_HOST: "10.0.2.15"
+    ZAP_PORT: "8090"
   before_script:
+    - apt-get update && apt-get install -y wget
     - pip install python-owasp-zap-v2.4 python-dotenv
-    - apt update && apt install -y wget
-    - wget -O botattack.py tu-script-botattack.py
-    - echo "ZAP_APIKEY=$ZAP_APIKEY" >> .env
-    - echo "TARGET=http://app-target:8000" >> .env
+    - wget -O botattack.py https://TU_URL_GITLAB/raw/main/botattack.py
   script:
     - python botattack.py
   artifacts:
+    when: always
     paths:
       - zap-report.html
   timeout: 20m
