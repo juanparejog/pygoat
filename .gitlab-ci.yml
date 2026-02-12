@@ -1,0 +1,84 @@
+stages:
+  - secrets-linting
+  - sast-deps
+  - static-analysis
+  - dynamic-analysis
+
+# Variables:
+variables:
+  SONAR_LOGIN: "$SONAR_TOKEN"
+  ZAP_API_KEY: "$ZAP_API_KEY"
+  PYTHON_VERSION: "3.11"
+
+# Etapa 1: Secrets & Linting (Gitleaks)
+secrets-gitleaks:
+  stage: secrets-linting
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --report-path gitleaks-report.json --log-opts="--all"
+  artifacts:
+    when: always
+    paths:
+      - gitleaks-report.json
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Etapa 2: Software Composition Analysis (Snyk)
+snyk-sca:
+  stage: sast-deps
+  image: python:3.11
+  before_script:
+    - apt-get update && apt-get install -y nodejs npm
+    - npm install -g snyk
+    - pip install -r requirements.txt
+  script:
+    - snyk auth "$SNYK_TOKEN"
+    - snyk test --file=requirements.txt --severity-threshold=high
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+  allow_failure: true
+
+# Etapa 3: Static Analysis (SonarCloud)
+sonarqube-scan:
+  stage: sonaeqube
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  script:
+    - sonar-scanner
+      -Dsonar.projectKey=juanparejo1_pygoat
+      -Dsonar.sources=.
+      -Dsonar.organization="$SONAR_ORGANIZATION"
+      -Dsonar.login="$SONAR_TOKEN"
+      -Dsonar.qualitygate.wait=true
+
+  #allow_failure: true
+
+# Etapa 4: Dynamic Analysis (OWASP ZAP + PyGoat)
+zap-dynamic:
+  stage: dynamic-analysis
+  image: python:3.11
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+  before_script:
+    - pip install -r requirements.txt
+    - docker build -t pygoat-app .
+      docker run -d --name pygoat-container -p 8080:8000 pygoat-app
+    - sleep 10
+  script:
+    - python zap_attack.py
+
+  after_script:
+    - docker stop pygoat-container || true
+    - docker rm pygoat-container || true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
